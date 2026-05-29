@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use id3::{Tag, TagLike, Frame, Version};
 
 use tauri::{Emitter, State};
 
@@ -2662,6 +2663,12 @@ async fn v2_download_purchase_track_impl(
         .get_track(track_id)
         .await
         .map_err(|e| format!("Failed to fetch track {}: {}", track_id, e))?;
+
+    let album = client
+        .get_album(&track.album.clone().unwrap().id)
+        .await
+        .map_err(|e| format!("Failed to fetch album {}: {}", track.album.clone().unwrap().id, e))?;
+
     let stream = client
         .get_track_file_url_by_format(track_id, format_id)
         .await
@@ -2670,16 +2677,28 @@ async fn v2_download_purchase_track_impl(
 
     let data = download_audio(&stream.url).await?;
 
+    let mut tag = Tag::new();
     let artist_name = track
         .performer
         .as_ref()
         .map(|artist| artist.name.clone())
         .unwrap_or_else(|| "Unknown Artist".to_string());
+    tag.set_artist(&artist_name);
     let album_title = track
         .album
         .as_ref()
         .map(|album| album.title.clone())
         .unwrap_or_else(|| "Singles".to_string());
+    tag.set_album(&album_title);
+    tag.set_title(&track.title);
+    // tag.set_year(album.release_date_original);
+    tag.set_track(track.track_number);
+    match album.tracks_count {
+        Some(tracks_count) => tag.set_total_tracks(tracks_count),
+        None => println!("No tracks count")
+    }
+    tag.set_album_artist(album.artist.name);
+
     let extension = v2_purchase_extension(stream.format_id, &stream.mime_type);
     let target_path = v2_purchase_target_path(
         destination,
@@ -2698,6 +2717,9 @@ async fn v2_download_purchase_track_impl(
 
     let temp_path = target_path.with_extension(format!("{}.part", extension));
     fs::write(&temp_path, &data).map_err(|e| format!("Failed to write temporary file: {}", e))?;
+
+    tag.write_to_path(&temp_path, Version::Id3v24);
+
     fs::rename(&temp_path, &target_path).map_err(|e| format!("Failed to finalize file: {}", e))?;
 
     Ok(target_path.to_string_lossy().to_string())
